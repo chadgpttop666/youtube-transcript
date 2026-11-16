@@ -156,12 +156,15 @@ function describeDub(st) {
 }
 
 async function pollStatus() {
+  const my = generation;
   try {
     const res = await browser.tabs.sendMessage(tab.id, { cmd: "dub-status" });
+    if (my !== generation) return; // пока ждали ответ, панель переключилась на другую вкладку
     const d = describeDub(res?.result);
     if (d) setStatus(d.text, d.kind);
     $("dubStop").disabled = !res?.result?.active;
   } catch (e) {
+    if (my !== generation) return;
     clearInterval(pollTimer);
     setStatus(isReloadError(e) ? RELOAD_HINT : e.message, "err");
   }
@@ -189,7 +192,7 @@ async function startDub() {
     });
     if (!res?.ok) throw new Error(res?.error || "страница не ответила");
     const skipped = parsed.skipped ? ` (строк без таймкода в начале пропущено: ${parsed.skipped})` : "";
-    setStatus(`Озвучиваю ${parsed.cues.length} фраз${skipped}. Окошко можно закрыть.`, "ok");
+    setStatus(`Озвучиваю ${parsed.cues.length} фраз${skipped}. Панель можно закрыть.`, "ok");
     clearInterval(pollTimer);
     pollTimer = setInterval(pollStatus, 1000);
   } catch (e) {
@@ -227,28 +230,78 @@ async function init() {
   $("dubStart").addEventListener("click", startDub);
   $("dubStop").addEventListener("click", stopDub);
   for (const t of document.querySelectorAll(".tab")) t.addEventListener("click", () => showTab(t.dataset.pane));
+  $("dubText").addEventListener("input", () => {
+    if (attachedKey) browser.storage.local.set({ [draftKey()]: $("dubText").value });
+  });
 
-  [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.url || !/^https:\/\/www\.youtube\.com\/(watch|shorts\/)/.test(tab.url)) {
+  // Панель живёт, пока открыта, поэтому следит за активной вкладкой своего
+  // окна: переключение вкладок, переход к другому видео, перезагрузка.
+  windowId = (await browser.windows.getCurrent()).id;
+  browser.tabs.onActivated.addListener((a) => {
+    if (a.windowId === windowId) attach();
+  });
+  browser.tabs.onUpdated.addListener((id, change, t) => {
+    if (t.windowId !== windowId || !t.active) return;
+    // Тот же ролик (например, сменился только &t=) — не сбрасываем выбранное.
+    if (change.url && videoKey(change.url) !== attachedKey) attach();
+    else if (change.status === "complete") attach();
+  }, { properties: ["url", "status"] });
+
+  await attach();
+}
+
+let windowId = null;
+let attachedKey = null; // ролик, к которому сейчас подключена панель
+let generation = 0;     // защищает от ответов страницы, которая уже не активна
+
+function videoKey(url) {
+  if (!url || !/^https:\/\/www\.youtube\.com\/(watch|shorts\/)/.test(url)) return null;
+  const u = new URL(url);
+  return u.searchParams.get("v") || u.pathname;
+}
+
+function resetView() {
+  clearInterval(pollTimer);
+  info = null;
+  $("title").textContent = "…";
+  $("channel").textContent = "";
+  $("tabs").hidden = true;
+  $("form").hidden = true;
+  for (const p of document.querySelectorAll(".pane")) p.hidden = true;
+  $("dubText").value = "";
+  setStatus("");
+}
+
+async function attach() {
+  const my = ++generation;
+  const stale = () => my !== generation;
+  resetView();
+  [tab] = await browser.tabs.query({ active: true, windowId });
+  if (stale()) return;
+  attachedKey = videoKey(tab?.url);
+  if (!attachedKey) {
     $("title").textContent = "Открой видео на YouTube";
-    setStatus("…и нажми на значок расширения ещё раз.");
-    $("pane-subs").hidden = true;
+    setStatus("Панель подхватит его сама.");
     return;
   }
   $("tabs").hidden = false;
   const draft = (await browser.storage.local.get(draftKey()))[draftKey()];
+  if (stale()) return;
   if (draft) $("dubText").value = draft;
-  $("dubText").addEventListener("input", () => browser.storage.local.set({ [draftKey()]: $("dubText").value }));
 
   // Идёт озвучка — сразу на её вкладку.
   const dubbing = await browser.tabs.sendMessage(tab.id, { cmd: "dub-status" }).catch(() => null);
+  if (stale()) return;
   showTab(dubbing?.result?.active ? "pane-dub" : settings.tab);
 
   if (settings.tab !== "pane-dub") setStatus("Читаю список субтитров…");
   try {
-    info = await ask("info");
+    const result = await ask("info");
+    if (stale()) return;
+    info = result;
     showInfo();
   } catch (e) {
+    if (stale()) return;
     $("title").textContent = "Не получилось подключиться к странице";
     if (settings.tab !== "pane-dub" || isReloadError(e)) setStatus(isReloadError(e) ? RELOAD_HINT : `Ошибка: ${e.message}`, "err");
   }

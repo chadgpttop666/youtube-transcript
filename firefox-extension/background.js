@@ -2,8 +2,13 @@
 const PDF_READER = "pdf-reader@chadgpttop666.github.io";
 const READER_COMMANDS = new Set(["tts-render", "tts-voices", "tts-preload"]);
 
-// Скачивание делается здесь, а не в popup: окошко popup закрывается при
-// открытии диалога «Сохранить как», и скачивание из него обрывалось бы.
+// Окно расширения — боковая панель: в отличие от всплывающего окошка она не
+// закрывается, когда щёлкаешь по странице. Значок на панели инструментов
+// открывает и закрывает её.
+browser.action.onClicked.addListener(() => browser.sidebarAction.toggle());
+
+// Скачивание делается здесь, а не в окне расширения: так оно не зависит от
+// того, открыта ли панель, пока идёт диалог «Сохранить как».
 async function download({ text, filename, saveAs }) {
   const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
   try {

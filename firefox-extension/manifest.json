@@ -1,16 +1,21 @@
 {
   "manifest_version": 3,
   "name": "YouTube → транскрипция",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Скачивает субтитры YouTube-видео в txt/srt/vtt/json и озвучивает вставленный перевод голосом TeraTTS поверх видео.",
   "icons": {
     "48": "icon.svg",
     "96": "icon.svg"
   },
   "action": {
-    "default_title": "Скачать транскрипцию",
-    "default_popup": "popup.html",
+    "default_title": "Транскрипция и озвучка — открыть или закрыть панель",
     "default_icon": "icon.svg"
+  },
+  "sidebar_action": {
+    "default_title": "YouTube → транскрипция",
+    "default_panel": "popup.html",
+    "default_icon": "icon.svg",
+    "open_at_install": false
   },
   "background": {
     "scripts": ["background.js"]
