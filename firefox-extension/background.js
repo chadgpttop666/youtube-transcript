@@ -46,6 +46,13 @@ async function toReader({ cmd, text, voiceId }) {
 browser.runtime.onMessage.addListener((msg, sender) => {
   // Панели на странице нужен номер своей вкладки, а сама она его не знает.
   if (msg?.cmd === "whoami") return Promise.resolve(sender.tab?.id ?? null);
+  // Панель (фрейм расширения на странице) просит передать сообщение своей
+  // вкладке: самой ей Firefox browser.tabs не даёт. Сайты сюда писать не
+  // могут (нет externally_connectable), проверяем, что это само расширение.
+  if (msg?.cmd === "to-tab") {
+    if (sender.id !== browser.runtime.id || !Number.isInteger(msg.tabId)) return undefined;
+    return browser.tabs.sendMessage(msg.tabId, msg.msg);
+  }
   if (msg?.cmd === "download") return download(msg);
   if (READER_COMMANDS.has(msg?.cmd)) return toReader(msg);
   return undefined;

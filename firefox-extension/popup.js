@@ -12,8 +12,15 @@ function setStatus(text, kind = "") {
   $("status").className = `status ${kind}`;
 }
 
+// Панель — страница расширения во фрейме на YouTube, а таким фреймам Firefox
+// не даёт browser.tabs. Со своей вкладкой панель говорит через фоновую страницу.
+function toTab(msg) {
+  if (ownTabId == null) return Promise.reject(new Error("панель не знает свою вкладку — обнови страницу (F5)"));
+  return browser.runtime.sendMessage({ cmd: "to-tab", tabId: ownTabId, msg });
+}
+
 async function ask(cmd, args = {}) {
-  const res = await browser.tabs.sendMessage(tab.id, { cmd, args });
+  const res = await toTab({ cmd, args });
   if (!res?.ok) throw new Error(res?.error || "нет ответа от страницы");
   return res.result;
 }
@@ -218,7 +225,7 @@ function describeDub(st) {
 async function pollStatus() {
   const my = generation;
   try {
-    const res = await browser.tabs.sendMessage(tab.id, { cmd: "dub-status" });
+    const res = await toTab({ cmd: "dub-status" });
     if (my !== generation) return; // пока ждали ответ, панель переключилась на другую вкладку
     const d = describeDub(res?.result);
     if (d) setStatus(d.text, d.kind);
@@ -241,7 +248,7 @@ async function startDub() {
   }
   await browser.storage.local.set({ [draftKey()]: text });
   try {
-    const res = await browser.tabs.sendMessage(tab.id, {
+    const res = await toTab({
       cmd: "dub-start",
       args: {
         cues: parsed.cues,
@@ -264,7 +271,7 @@ async function startDub() {
 
 async function stopDub() {
   try {
-    await browser.tabs.sendMessage(tab.id, { cmd: "dub-stop" });
+    await toTab({ cmd: "dub-stop" });
     setStatus("Озвучка остановлена.");
     $("dubStop").disabled = true;
   } catch (e) {
@@ -289,7 +296,7 @@ async function init() {
   $("dubVoice").addEventListener("change", updateVoiceMode);
   // Субтитры включаются и выключаются прямо во время озвучки.
   $("dubSubs").addEventListener("change", () => {
-    if (tab) browser.tabs.sendMessage(tab.id, { cmd: "dub-config", args: { subs: $("dubSubs").checked } }).catch(() => {});
+    if (tab) toTab({ cmd: "dub-config", args: { subs: $("dubSubs").checked } }).catch(() => {});
   });
   setupFileDrop();
   $("dubDuck").addEventListener("input", () => ($("dubDuckValue").textContent = `${$("dubDuck").value}%`));
@@ -307,7 +314,7 @@ async function init() {
   // адреса фрейма. Другие вкладки её не касаются: у каждой своя панель.
   const fromUrl = Number(new URLSearchParams(location.search).get("tab"));
   if (Number.isInteger(fromUrl) && fromUrl >= 0) ownTabId = fromUrl;
-  else [{ id: ownTabId } = {}] = await browser.tabs.query({ active: true, currentWindow: true });
+  else ownTabId = await browser.runtime.sendMessage({ cmd: "whoami" }).catch(() => null);
   // YouTube переходит между видео без перезагрузки страницы — panel.js
   // сообщает об этом, а адрес мы всё равно перепроверяем у вкладки сами.
   window.addEventListener("message", async (e) => {
@@ -388,12 +395,11 @@ function setupFileDrop() {
 
 let ownTabId = null;
 
-// Адрес страницы — у скрипта на ней (panel.js); tabs.get — запасной путь.
+// Адрес страницы — у скрипта на ней (panel.js).
 async function pageUrl() {
   if (ownTabId == null) return null;
-  const res = await browser.tabs.sendMessage(ownTabId, { cmd: "page-url" }).catch(() => null);
-  if (res?.url) return res.url;
-  return (await browser.tabs.get(ownTabId).catch(() => null))?.url ?? null;
+  const res = await toTab({ cmd: "page-url" }).catch(() => null);
+  return res?.url ?? null;
 }
 let attachedKey = null; // ролик, к которому сейчас подключена панель
 let generation = 0;     // защищает от ответов про видео, с которого уже ушли
@@ -435,7 +441,7 @@ async function attach() {
   if (draft) $("dubText").value = draft;
 
   // Идёт озвучка — сразу на её вкладку.
-  const dubbing = await browser.tabs.sendMessage(tab.id, { cmd: "dub-status" }).catch(() => null);
+  const dubbing = await toTab({ cmd: "dub-status" }).catch(() => null);
   if (stale()) return;
   showTab(dubbing?.result?.active ? "pane-dub" : settings.tab);
 
