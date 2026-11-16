@@ -1,0 +1,6 @@
+youtube-transcript-api>=1.2
+requests
+# распознавание речи у видео без субтитров (groq_asr.py)
+yt-dlp[default]
+av
+deno

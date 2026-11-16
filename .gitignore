@@ -1,0 +1,12 @@
+# Личное: ключ Groq и прочие настройки окна, скачанные расшифровки
+settings.json
+transcripts/
+
+# Python
+__pycache__/
+*.pyc
+
+# Сборки расширения
+firefox-extension/web-ext-artifacts/
+*.xpi
+*.zip

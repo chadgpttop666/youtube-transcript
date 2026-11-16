@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>YouTube → транскрипция</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <div id="title" class="title">…</div>
+    <div id="channel" class="channel"></div>
+  </header>
+
+  <nav id="tabs" class="tabs" hidden>
+    <button id="tab-subs" class="tab active" data-pane="pane-subs">Субтитры</button>
+    <button id="tab-dub" class="tab" data-pane="pane-dub">Озвучка</button>
+  </nav>
+
+  <section id="pane-subs" class="pane">
+    <main id="form" hidden>
+      <label>Субтитры
+        <select id="track"></select>
+      </label>
+      <label>Перевести на
+        <select id="tlang"><option value="">— без перевода —</option></select>
+      </label>
+      <div class="row">
+        <label class="grow">Формат
+          <select id="format">
+            <option value="txt">txt — текст</option>
+            <option value="srt">srt — для плеера</option>
+            <option value="vtt">vtt — для плеера</option>
+            <option value="json">json</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" id="timestamps"> Таймкоды</label>
+      </div>
+      <div class="row buttons">
+        <button id="download" class="primary">Скачать</button>
+        <button id="copy">Копировать</button>
+      </div>
+    </main>
+
+    <details>
+      <summary>Настройки</summary>
+      <label>Языки по приоритету
+        <input id="langs" type="text" placeholder="ru en">
+      </label>
+      <label class="check"><input type="checkbox" id="saveAs"> Спрашивать, куда сохранить</label>
+    </details>
+  </section>
+
+  <section id="pane-dub" class="pane" hidden>
+    <label>Перевод с таймкодами
+      <textarea id="dubText" rows="8" spellcheck="false"
+        placeholder="[00:00] Всем привет!&#10;[00:03] Сегодня поговорим о…&#10;&#10;или SRT"></textarea>
+    </label>
+    <p class="hint">Скопируй субтитры с таймкодами на вкладке «Субтитры», переведи, сохранив метки [мм:сс], и вставь сюда.</p>
+    <label>Голос
+      <select id="dubVoice"><option value="">загружаю…</option></select>
+    </label>
+    <label>Громкость оригинала во время фразы: <b id="dubDuckValue">20%</b>
+      <input type="range" id="dubDuck" min="0" max="100" step="5" value="20">
+    </label>
+    <label class="check"><input type="checkbox" id="dubMerge" checked> Склеивать обрывки в предложения</label>
+    <label class="check"><input type="checkbox" id="dubWait" checked> Ставить видео на паузу, если фраза не готова</label>
+    <div class="row buttons">
+      <button id="dubStart" class="primary">Озвучить</button>
+      <button id="dubStop">Стоп</button>
+    </div>
+  </section>
+
+  <div id="status" class="status"></div>
+
+  <script src="format.js"></script>
+  <script src="cues.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
