@@ -308,11 +308,14 @@ async function init() {
   const fromUrl = Number(new URLSearchParams(location.search).get("tab"));
   if (Number.isInteger(fromUrl) && fromUrl >= 0) ownTabId = fromUrl;
   else [{ id: ownTabId } = {}] = await browser.tabs.query({ active: true, currentWindow: true });
-  // YouTube переходит между видео без перезагрузки страницы.
-  browser.tabs.onUpdated.addListener((id, change) => {
+  // YouTube переходит между видео без перезагрузки страницы — panel.js
+  // сообщает об этом, а адрес мы всё равно перепроверяем у вкладки сами.
+  window.addEventListener("message", async (e) => {
+    if (e.source !== window.parent || e.data?.ytt !== "page-changed") return;
+    const url = await pageUrl();
     // Тот же ролик (например, сменился только &t=) — не сбрасываем выбранное.
-    if (change.url && videoKey(change.url) !== attachedKey) attach();
-  }, { tabId: ownTabId, properties: ["url"] });
+    if (videoKey(url) !== attachedKey) attach();
+  });
 
   await attach();
 }
@@ -331,17 +334,17 @@ async function readTextFile(file) {
 }
 
 async function loadSubtitleFile(file) {
-  if (!tab || !attachedKey) {
-    setStatus("Сначала открой видео на YouTube.", "err");
-    return;
-  }
   if (file.size > MAX_FILE_BYTES) {
     setStatus(`Файл ${file.name} слишком большой для субтитров.`, "err");
     return;
   }
   const text = await readTextFile(file);
-  showTab("pane-dub");
+  if (attachedKey) showTab("pane-dub");
   $("dubText").value = text;
+  if (!attachedKey) {
+    setStatus(`Файл ${file.name} вставлен, но панель не видит видео на этой вкладке — обнови страницу (F5).`, "err");
+    return;
+  }
   await browser.storage.local.set({ [draftKey()]: text });
   try {
     const { cues } = YTTCues.parse(text, { merge: $("dubMerge").checked });
@@ -384,6 +387,14 @@ function setupFileDrop() {
 }
 
 let ownTabId = null;
+
+// Адрес страницы — у скрипта на ней (panel.js); tabs.get — запасной путь.
+async function pageUrl() {
+  if (ownTabId == null) return null;
+  const res = await browser.tabs.sendMessage(ownTabId, { cmd: "page-url" }).catch(() => null);
+  if (res?.url) return res.url;
+  return (await browser.tabs.get(ownTabId).catch(() => null))?.url ?? null;
+}
 let attachedKey = null; // ролик, к которому сейчас подключена панель
 let generation = 0;     // защищает от ответов про видео, с которого уже ушли
 
@@ -409,8 +420,9 @@ async function attach() {
   const my = ++generation;
   const stale = () => my !== generation;
   resetView();
-  tab = ownTabId == null ? null : await browser.tabs.get(ownTabId).catch(() => null);
+  const url = await pageUrl();
   if (stale()) return;
+  tab = ownTabId == null ? null : { id: ownTabId, url };
   attachedKey = videoKey(tab?.url);
   if (!attachedKey) {
     $("title").textContent = "Открой видео на YouTube";

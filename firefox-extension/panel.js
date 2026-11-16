@@ -168,11 +168,13 @@
     b.className = "ytp-button ytt-player-button";
     b.title = "Транскрипция и озвучка";
     b.setAttribute("aria-label", "Транскрипция и озвучка");
-    const svg = svgEl("svg", { viewBox: "0 0 36 36", width: "100%", height: "100%" });
+    Object.assign(b.style, { display: "inline-flex", alignItems: "center", justifyContent: "center", alignSelf: "center", padding: "0", margin: "0" });
+    const svg = svgEl("svg", { viewBox: "0 0 24 24", width: "24", height: "24" });
+    svg.style.display = "block";
     // Облачко реплики с двумя строками текста.
     svg.append(
-      svgEl("path", { d: "M9 10h18a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-9l-5 4v-4H9a2 2 0 0 1-2-2V12a2 2 0 0 1 2-2z", fill: "none", stroke: "#fff", "stroke-width": "2", "stroke-linejoin": "round" }),
-      svgEl("path", { d: "M12 15.5h12M12 19.5h8", stroke: "#fff", "stroke-width": "2", "stroke-linecap": "round" }),
+      svgEl("path", { d: "M5 4.5h14a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2h-7l-4.5 3.5V17H5a2 2 0 0 1-2-2V6.5a2 2 0 0 1 2-2z", fill: "none", stroke: "#fff", "stroke-width": "2", "stroke-linejoin": "round" }),
+      svgEl("path", { d: "M7.5 9h9M7.5 12.5h6", stroke: "#fff", "stroke-width": "2", "stroke-linecap": "round" }),
     );
     b.append(svg);
     b.addEventListener("click", (e) => {
@@ -188,14 +190,33 @@
     button.setAttribute("aria-pressed", String(isOpen()));
   }
 
+  // Размер берём у соседней кнопки плеера (например, «Субтитры»): у старого и
+  // нового оформления YouTube кнопки и значки разного размера.
+  function matchSiblings(controls) {
+    const ref = [...controls.querySelectorAll(".ytp-button")]
+      .find((b) => b !== button && b.offsetWidth > 0 && b.querySelector("svg")?.getBoundingClientRect().height > 0);
+    if (!ref) return;
+    const rs = getComputedStyle(ref);
+    const icon = ref.querySelector("svg").getBoundingClientRect();
+    const size = Math.round(Math.min(icon.width, icon.height));
+    Object.assign(button.style, { width: rs.width, height: rs.height });
+    const svg = button.querySelector("svg");
+    if (size >= 12 && svg.getAttribute("width") !== String(size)) {
+      svg.setAttribute("width", String(size));
+      svg.setAttribute("height", String(size));
+    }
+  }
+
   // YouTube перестраивает плеер при переходах, поэтому кнопку проверяем почаще.
   function ensureButton() {
     const controls = document.querySelector("#movie_player .ytp-right-controls");
     if (!controls) return;
-    if (button?.isConnected && button.parentElement === controls) return;
-    button ??= makeButton();
-    controls.prepend(button);
-    updateButton();
+    if (!(button?.isConnected && button.parentElement === controls)) {
+      button ??= makeButton();
+      controls.prepend(button);
+      updateButton();
+    }
+    matchSiblings(controls);
   }
 
   setInterval(ensureButton, 1500);
@@ -210,9 +231,17 @@
     return { top: r.top, right: window.innerWidth - r.right, width: r.width, height: r.height };
   }
 
-  // Значок расширения на панели инструментов Firefox — тоже открывает панель.
+  // Адрес страницы панель узнаёт отсюда, а не из tabs.get: Firefox отдаёт
+  // адрес вкладки не всегда (зависит от выданных разрешений).
+  // Переход к другому видео без перезагрузки — даём панели знать.
+  const notifyFrame = () => frame?.contentWindow?.postMessage({ ytt: "page-changed" }, "*");
+  document.addEventListener("yt-navigate-finish", notifyFrame);
+  window.addEventListener("popstate", notifyFrame);
+
   browser.runtime.onMessage.addListener((msg) => {
-    if (msg?.cmd !== "panel-toggle") return undefined;
-    return Promise.resolve(togglePanel()).then(() => ({ ok: true }));
+    // Значок расширения на панели инструментов Firefox — тоже открывает панель.
+    if (msg?.cmd === "panel-toggle") return Promise.resolve(togglePanel()).then(() => ({ ok: true }));
+    if (msg?.cmd === "page-url") return Promise.resolve({ ok: true, url: location.href });
+    return undefined;
   });
 })();
