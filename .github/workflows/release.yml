@@ -1,0 +1,81 @@
+# Подпись расширения Firefox на addons.mozilla.org и выпуск релиза.
+#
+# Новая версия в firefox-extension/manifest.json → AMO подписывает её (канал
+# unlisted: без публикации в каталоге) → релиз v<версия> с подписанным .xpi и
+# updates.json, по которому установленный Firefox сам подтягивает обновление.
+# Ключи AMO лежат в секретах репозитория — см. firefox-extension/README.md.
+
+name: Подпись и релиз
+
+on:
+  push:
+    branches: [main, claude/amazing-fermi-cryn6r]
+    paths:
+      - 'firefox-extension/**'
+      - 'scripts/make-updates-json.mjs'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+      AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+      WEB_EXT: web-ext@8.10.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Ошибка линтера — это отказ AMO в подписи, поэтому проверяем заранее.
+      - name: Проверка расширения
+        run: npx --yes "$WEB_EXT" lint --source-dir firefox-extension --self-hosted
+
+      - name: Что выпускать
+        id: plan
+        run: |
+          version="$(node -p "require('./firefox-extension/manifest.json').version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" > /dev/null 2>&1; then
+            echo "Релиз v$version уже есть — подписывать нечего. Поднимите version в manifest.json."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          elif [ -z "$AMO_JWT_ISSUER" ] || [ -z "$AMO_JWT_SECRET" ]; then
+            echo "::warning title=Нет ключей AMO::Добавьте секреты AMO_JWT_ISSUER и AMO_JWT_SECRET (firefox-extension/README.md) и перезапустите workflow."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Подпись на AMO
+        if: steps.plan.outputs.release == 'true'
+        run: >
+          npx --yes "$WEB_EXT" sign
+          --channel unlisted
+          --source-dir firefox-extension
+          --artifacts-dir signed
+          --api-key "$AMO_JWT_ISSUER"
+          --api-secret "$AMO_JWT_SECRET"
+          --approval-timeout 1800000
+
+      - name: Релиз
+        if: steps.plan.outputs.release == 'true'
+        run: |
+          version="${{ steps.plan.outputs.version }}"
+          xpi="youtube-transcript-$version.xpi"
+          mv signed/*.xpi "$xpi"
+          node scripts/make-updates-json.mjs "$xpi" > updates.json
+          gh release create "v$version" "$xpi" updates.json \
+            --target "$GITHUB_SHA" \
+            --title "YouTube → транскрипция $version" \
+            --notes "Скачайте $xpi и перетащите в окно Firefox — версия подписана Mozilla и останется после перезапуска."
