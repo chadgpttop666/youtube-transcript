@@ -125,3 +125,10 @@ textarea {
 input[type="range"] { display: block; width: 100%; margin-top: 4px; accent-color: var(--accent); }
 .hint { margin: -4px 0 10px; color: var(--muted); font-size: 12px; }
 summary { cursor: pointer; color: var(--muted); margin-bottom: 8px; }
+
+/* Файл субтитров перетаскивают прямо на панель. */
+.file-link { display: inline; margin: 0; color: var(--accent); cursor: pointer; text-decoration: underline; }
+body.dropping { outline: 2px dashed var(--accent); outline-offset: -6px; }
+body.dropping #dubText { border-color: var(--accent); }
+
+.status { white-space: pre-line; }

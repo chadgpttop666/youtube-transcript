@@ -1,7 +1,7 @@
 const $ = (id) => document.getElementById(id);
 const DEFAULTS = {
   langs: "ru en", format: "txt", timestamps: false, saveAs: false,
-  dubVoice: "tera:ru_m5", dubDuck: 20, dubMerge: true, dubWait: true, tab: "pane-subs",
+  dubVoice: "tera:ru_m5", dubDuck: 20, dubMerge: true, dubWait: true, dubSubs: false, tab: "pane-subs",
 };
 let settings = { ...DEFAULTS };
 let tab = null;
@@ -72,12 +72,28 @@ async function buildText() {
   return { text, filename: `${stem} [${lang}].${format}`, count: snippets.length, note };
 }
 
+// Во фрейме на странице YouTube navigator.clipboard может быть недоступен —
+// тогда по-старому, через выделение текста.
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = text;
+    document.body.append(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    if (!ok) throw new Error("не получилось скопировать в буфер обмена");
+  }
+}
+
 async function run(action) {
   for (const b of document.querySelectorAll("button")) b.disabled = true;
   try {
     const { text, filename, count, note } = await buildText();
     if (action === "copy") {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
       setStatus(`Скопировано: ${count} фраз${note}`, "ok");
     } else {
       await browser.runtime.sendMessage({ cmd: "download", text, filename, saveAs: settings.saveAs });
@@ -100,6 +116,7 @@ async function saveSettings() {
     dubDuck: Number($("dubDuck").value),
     dubMerge: $("dubMerge").checked,
     dubWait: $("dubWait").checked,
+    dubSubs: $("dubSubs").checked,
     tab: settings.tab,
   };
   await browser.storage.local.set(settings);
@@ -127,30 +144,73 @@ function showTab(paneId) {
   }
 }
 
+const NO_VOICE = "none"; // только субтитры с текстом, без голоса
+const noVoiceOption = () => new Option("— без голоса, только субтитры —", NO_VOICE);
 let voicesLoaded = false;
 async function loadVoices() {
   if (voicesLoaded) return;
   try {
     const { voices, installed } = await browser.runtime.sendMessage({ cmd: "tts-voices" });
-    $("dubVoice").replaceChildren(...voices.map((v) => new Option(v.name.replace(/^TeraTTS — /, ""), v.id)));
+    $("dubVoice").replaceChildren(...voices.map((v) => new Option(v.name.replace(/^TeraTTS — /, ""), v.id)), noVoiceOption());
     $("dubVoice").value = settings.dubVoice;
     if (!$("dubVoice").value && voices[0]) $("dubVoice").value = voices[0].id;
     voicesLoaded = true;
     if (!installed) setStatus("Голоса TeraTTS не скачаны: PDF-читалка → Настройки → Голоса и модели.", "err");
   } catch (e) {
-    $("dubVoice").replaceChildren(new Option("нет голосов", ""));
+    // Без читалки голоса нет, но субтитры с текстом показать можно.
+    $("dubVoice").replaceChildren(noVoiceOption());
+    $("dubVoice").value = NO_VOICE;
     setStatus(e.message, "err");
   }
+  updateVoiceMode();
+}
+
+function updateVoiceMode() {
+  const none = $("dubVoice").value === NO_VOICE;
+  $("dubWait").disabled = none;
+  $("dubDuck").disabled = none;
+  $("dubSubs").disabled = none;
+  if (none) $("dubSubs").checked = true;
+}
+
+// «≈ 7 с», «≈ 2 мин»
+function about(sec) {
+  if (sec < 1.5) return "≈ 1 с";
+  if (sec < 90) return `≈ ${Math.round(sec)} с`;
+  return `≈ ${Math.round(sec / 60)} мин`;
+}
+
+const clock = (sec) => {
+  const t = Math.floor(sec);
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), ss = String(t % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+};
+
+// Сколько ждать озвучку: фраза готовится заранее, поэтому важно, успеет ли
+// она к своему таймкоду.
+function describeNext(st) {
+  const n = st.next;
+  if (!n) return "";
+  if (n.readyIn === 0) return st.readyUntil != null ? `Озвучено впрок до ${clock(st.readyUntil)}` : "";
+  if (n.readyIn == null) return "Готовлю первую фразу… первая дольше: загружается голос";
+  if (st.waiting) return `Жду фразу ${n.index}: ${about(n.readyIn)}`;
+  const late = n.readyIn > n.inSeconds + 0.5;
+  return `Фраза ${n.index} будет готова через ${about(n.readyIn)}` +
+    (late ? (st.wait ? " — видео подождёт" : " — может не успеть") : "");
 }
 
 function describeDub(st) {
   if (!st?.active) return null;
+  if (!st.voiced) {
+    return { text: `Фраза ${Math.max(st.position, 0)} из ${st.total} · только субтитры`, kind: "ok" };
+  }
   const parts = [`Фраза ${Math.max(st.position, 0)} из ${st.total}`, `озвучено ${st.prepared}`];
   if (st.errors) parts.push(`ошибок ${st.errors}`);
   let line = parts.join(" · ");
   if (st.audioBlocked) return { text: `${line}\nFirefox не даёт играть звук — нажми на видео.`, kind: "err" };
-  if (st.waiting) line += "\nЖду, пока озвучится фраза…";
-  else if (st.speaking) line += `\n«${st.speaking.length > 90 ? `${st.speaking.slice(0, 90)}…` : st.speaking}»`;
+  const next = describeNext({ ...st, wait: $("dubWait").checked });
+  if (next) line += `\n${next}`;
+  if (st.speaking && !st.waiting) line += `\n«${st.speaking.length > 90 ? `${st.speaking.slice(0, 90)}…` : st.speaking}»`;
   if (st.lastError) return { text: `${line}\nОшибка: ${st.lastError}`, kind: "err" };
   return { text: line, kind: "ok" };
 }
@@ -185,14 +245,16 @@ async function startDub() {
       cmd: "dub-start",
       args: {
         cues: parsed.cues,
-        voiceId: $("dubVoice").value || settings.dubVoice,
+        voiceId: $("dubVoice").value === NO_VOICE ? "" : $("dubVoice").value || settings.dubVoice,
         duck: Number($("dubDuck").value) / 100,
         wait: $("dubWait").checked,
+        subs: $("dubSubs").checked,
       },
     });
     if (!res?.ok) throw new Error(res?.error || "страница не ответила");
     const skipped = parsed.skipped ? ` (строк без таймкода в начале пропущено: ${parsed.skipped})` : "";
-    setStatus(`Озвучиваю ${parsed.cues.length} фраз${skipped}. Панель можно закрыть.`, "ok");
+    const what = $("dubVoice").value === NO_VOICE ? "Показываю субтитрами" : "Озвучиваю";
+    setStatus(`${what} ${parsed.cues.length} фраз${skipped}. Панель можно закрыть.`, "ok");
     clearInterval(pollTimer);
     pollTimer = setInterval(pollStatus, 1000);
   } catch (e) {
@@ -220,9 +282,16 @@ async function init() {
   $("dubDuckValue").textContent = `${settings.dubDuck}%`;
   $("dubMerge").checked = settings.dubMerge;
   $("dubWait").checked = settings.dubWait;
-  for (const id of ["langs", "format", "timestamps", "saveAs", "dubVoice", "dubDuck", "dubMerge", "dubWait"]) {
+  $("dubSubs").checked = settings.dubSubs;
+  for (const id of ["langs", "format", "timestamps", "saveAs", "dubVoice", "dubDuck", "dubMerge", "dubWait", "dubSubs"]) {
     $(id).addEventListener("change", saveSettings);
   }
+  $("dubVoice").addEventListener("change", updateVoiceMode);
+  // Субтитры включаются и выключаются прямо во время озвучки.
+  $("dubSubs").addEventListener("change", () => {
+    if (tab) browser.tabs.sendMessage(tab.id, { cmd: "dub-config", args: { subs: $("dubSubs").checked } }).catch(() => {});
+  });
+  setupFileDrop();
   $("dubDuck").addEventListener("input", () => ($("dubDuckValue").textContent = `${$("dubDuck").value}%`));
   $("track").addEventListener("change", updateTranslate);
   $("download").addEventListener("click", () => run("download"));
@@ -234,25 +303,89 @@ async function init() {
     if (attachedKey) browser.storage.local.set({ [draftKey()]: $("dubText").value });
   });
 
-  // Панель живёт, пока открыта, поэтому следит за активной вкладкой своего
-  // окна: переключение вкладок, переход к другому видео, перезагрузка.
-  windowId = (await browser.windows.getCurrent()).id;
-  browser.tabs.onActivated.addListener((a) => {
-    if (a.windowId === windowId) attach();
-  });
-  browser.tabs.onUpdated.addListener((id, change, t) => {
-    if (t.windowId !== windowId || !t.active) return;
+  // Панель встроена в страницу YouTube (panel.js) и знает свою вкладку из
+  // адреса фрейма. Другие вкладки её не касаются: у каждой своя панель.
+  const fromUrl = Number(new URLSearchParams(location.search).get("tab"));
+  if (Number.isInteger(fromUrl) && fromUrl >= 0) ownTabId = fromUrl;
+  else [{ id: ownTabId } = {}] = await browser.tabs.query({ active: true, currentWindow: true });
+  // YouTube переходит между видео без перезагрузки страницы.
+  browser.tabs.onUpdated.addListener((id, change) => {
     // Тот же ролик (например, сменился только &t=) — не сбрасываем выбранное.
     if (change.url && videoKey(change.url) !== attachedKey) attach();
-    else if (change.status === "complete") attach();
-  }, { properties: ["url", "status"] });
+  }, { tabId: ownTabId, properties: ["url"] });
 
   await attach();
 }
 
-let windowId = null;
+// ── Файл субтитров перетаскиванием ──────────────────────────────────────
+const MAX_FILE_BYTES = 5 * 1024 * 1024;
+
+// Русские SRT нередко в windows-1251 — если это не UTF-8, читаем так.
+async function readTextFile(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes).replace(/^\uFEFF/, "");
+  } catch {
+    return new TextDecoder("windows-1251").decode(bytes);
+  }
+}
+
+async function loadSubtitleFile(file) {
+  if (!tab || !attachedKey) {
+    setStatus("Сначала открой видео на YouTube.", "err");
+    return;
+  }
+  if (file.size > MAX_FILE_BYTES) {
+    setStatus(`Файл ${file.name} слишком большой для субтитров.`, "err");
+    return;
+  }
+  const text = await readTextFile(file);
+  showTab("pane-dub");
+  $("dubText").value = text;
+  await browser.storage.local.set({ [draftKey()]: text });
+  try {
+    const { cues } = YTTCues.parse(text, { merge: $("dubMerge").checked });
+    setStatus(`Загружен ${file.name}: ${cues.length} фраз. Жми «Озвучить».`, "ok");
+  } catch (e) {
+    setStatus(`${file.name}: ${e.message}`, "err");
+  }
+}
+
+function setupFileDrop() {
+  const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes("Files");
+  let depth = 0;
+  document.addEventListener("dragenter", (e) => {
+    if (!hasFiles(e)) return;
+    depth += 1;
+    document.body.classList.add("dropping");
+  });
+  document.addEventListener("dragleave", (e) => {
+    if (!hasFiles(e)) return;
+    depth = Math.max(0, depth - 1);
+    if (!depth) document.body.classList.remove("dropping");
+  });
+  // Без preventDefault Firefox открыл бы файл вместо панели.
+  document.addEventListener("dragover", (e) => {
+    if (hasFiles(e)) e.preventDefault();
+  });
+  document.addEventListener("drop", (e) => {
+    if (!hasFiles(e)) return; // перетащенный текст textarea вставит сама
+    e.preventDefault();
+    depth = 0;
+    document.body.classList.remove("dropping");
+    const file = e.dataTransfer.files[0];
+    if (file) loadSubtitleFile(file).catch((err) => setStatus(`Ошибка: ${err.message}`, "err"));
+  });
+  $("dubFile").addEventListener("change", () => {
+    const file = $("dubFile").files[0];
+    $("dubFile").value = "";
+    if (file) loadSubtitleFile(file).catch((err) => setStatus(`Ошибка: ${err.message}`, "err"));
+  });
+}
+
+let ownTabId = null;
 let attachedKey = null; // ролик, к которому сейчас подключена панель
-let generation = 0;     // защищает от ответов страницы, которая уже не активна
+let generation = 0;     // защищает от ответов про видео, с которого уже ушли
 
 function videoKey(url) {
   if (!url || !/^https:\/\/www\.youtube\.com\/(watch|shorts\/)/.test(url)) return null;
@@ -276,12 +409,12 @@ async function attach() {
   const my = ++generation;
   const stale = () => my !== generation;
   resetView();
-  [tab] = await browser.tabs.query({ active: true, windowId });
+  tab = ownTabId == null ? null : await browser.tabs.get(ownTabId).catch(() => null);
   if (stale()) return;
   attachedKey = videoKey(tab?.url);
   if (!attachedKey) {
     $("title").textContent = "Открой видео на YouTube";
-    setStatus("Панель подхватит его сама.");
+    setStatus("Панель подхватит его сама, когда откроешь видео в этой вкладке.");
     return;
   }
   $("tabs").hidden = false;

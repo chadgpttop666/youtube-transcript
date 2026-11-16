@@ -8,7 +8,20 @@ const YTTCues = (() => {
   const SENTENCE_END = /[.!?…;:»"')\]]$/;
 
   const seconds = (h, m, s, ms) => (Number(h) || 0) * 3600 + Number(m) * 60 + Number(s) + (ms ? Number(ms.padEnd(3, "0")) / 1000 : 0);
-  const clean = (text) => text.replace(/<[^>]*>|\{\\[^}]*\}/g, "").replace(/\s+/g, " ").trim();
+  // Пометки звуков вместо речи: [Музыка], [Аплодисменты], (смех), ♪ … ♪.
+  // Их не зачитываем: квадратные скобки — всегда пометка, круглые — только
+  // если внутри одно из звуковых слов (в круглых бывает и обычный текст).
+  const SOUND_WORDS = String.raw`музык\S*|music|аплодисмент\S*|applause|смех|смеётся|смеется|laugh\S*|` +
+    String.raw`вздох\S*|вздыхает|sigh\S*|шум\S*|noise|тишина|silence|песня|пение|singing|звук\S*|sound\S*|` +
+    String.raw`крики|кричит|cheer\S*|инструментал\S*|instrumental|неразборчиво|inaudible`;
+  const PAREN_SOUND = new RegExp(String.raw`\(\s*(?:${SOUND_WORDS})(?:\s+(?:${SOUND_WORDS}|и|and|&|,))*\s*\)`, "giu");
+  const clean = (text) => text
+    .replace(/<[^>]*>|\{\\[^}]*\}/g, "")
+    .replace(/\[[^\]]*\]/g, " ")
+    .replace(PAREN_SOUND, " ")
+    .replace(/[♪♫♬]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
   function parseCueFile(text) {
     const cues = [];
@@ -58,19 +71,22 @@ const YTTCues = (() => {
   }
 
   /**
-   * @returns {{ cues: {start:number, text:string}[], format: string, skipped: number }}
+   * @returns {{ cues: {start:number, end?:number, text:string}[], format: string, skipped: number }}
    * @throws если таймкодов нет вовсе
    */
   function parse(text, { merge = true } = {}) {
     const isCueFile = CUE_LINE.test(text);
     const parsed = isCueFile ? { cues: parseCueFile(text), skipped: 0 } : parseStamped(text);
     let cues = parsed.cues.filter((cue) => cue.text).sort((a, b) => a.start - b.start);
+    if (!cues.length && parsed.cues.length) {
+      throw new Error("Здесь только пометки вроде [Музыка] — озвучивать нечего.");
+    }
     if (!cues.length) {
       throw new Error("Не нашёл таймкодов. Нужны строки вида «[01:23] текст» или SRT — без них непонятно, когда что говорить.");
     }
     if (merge) cues = mergeSentences(cues);
     return {
-      cues: cues.map(({ start, text }) => ({ start, text })),
+      cues: cues.map(({ start, end, text }) => (end > start ? { start, end, text } : { start, text })),
       format: isCueFile ? "srt" : "stamped",
       skipped: parsed.skipped,
     };

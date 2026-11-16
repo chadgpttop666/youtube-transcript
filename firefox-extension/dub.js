@@ -11,6 +11,7 @@
   const QUEUE_WINDOW = 2.5; // фраза ждала конца предыдущей — столько ещё можно опоздать
   const MAX_RATE = 2.2; // быстрее речь уже не разобрать
   const UNDUCK_DELAY_MS = 600; // короткие паузы между фразами оригинал не «выныривает»
+  const READ_CHARS_PER_SECOND = 14; // сколько субтитр висит без явного конца: успеть прочитать
 
   let s = null; // текущая озвучка
   let ctx = null;
@@ -60,7 +61,7 @@
 
   // ── Синтез впрок ────────────────────────────────────────────────────
   async function pump() {
-    if (!s || s.busy) return;
+    if (!s || s.busy || !s.voiceId) return;
     const mine = s;
     const t = s.video.currentTime;
     const from = Math.max(0, indexAt(t));
@@ -83,9 +84,13 @@
 
     cue.state = "loading";
     s.busy = true;
+    s.loadingSince = performance.now();
     try {
       const reply = await browser.runtime.sendMessage({ cmd: "tts-render", text: cue.text, voiceId: s.voiceId });
       if (s !== mine) return;
+      // Скорость синтеза — для оценки, когда будет готова следующая фраза.
+      const perChar = (performance.now() - s.loadingSince) / 1000 / Math.max(20, cue.text.length);
+      s.secPerChar = s.secPerChar ? s.secPerChar * 0.6 + perChar * 0.4 : perChar;
       cue.pcm = reply.pcm;
       cue.sampleRate = reply.sampleRate;
       cue.state = "ready";
@@ -102,6 +107,58 @@
         pump();
       }
     }
+  }
+
+  // ── Субтитры с текстом перевода ─────────────────────────────────────
+  let subsBox = null;
+
+  function subsElement() {
+    const player = document.querySelector("#movie_player") || s.video.parentElement;
+    if (subsBox?.isConnected && subsBox.parentElement === player) return subsBox;
+    subsBox?.remove();
+    subsBox = document.createElement("div");
+    subsBox.className = "ytt-dub-subs";
+    Object.assign(subsBox.style, {
+      position: "absolute",
+      left: "50%",
+      bottom: "14%",
+      transform: "translateX(-50%)",
+      maxWidth: "80%",
+      padding: "4px 10px",
+      borderRadius: "4px",
+      background: "rgba(8, 8, 8, 0.75)",
+      color: "#fff",
+      font: "500 clamp(15px, 2.2vw, 30px)/1.35 'YouTube Noto', Roboto, Arial, sans-serif",
+      textAlign: "center",
+      whiteSpace: "pre-wrap",
+      pointerEvents: "none",
+      zIndex: "60",
+      display: "none",
+    });
+    player.appendChild(subsBox);
+    return subsBox;
+  }
+
+  // Субтитр висит до конца фразы (SRT/VTT), но не дольше, чем до следующей,
+  // а без явного конца — сколько нужно, чтобы прочитать.
+  function cueEnd(i) {
+    const cue = s.cues[i];
+    const next = s.cues[i + 1];
+    const readable = cue.start + Math.max(2.5, cue.text.length / READ_CHARS_PER_SECOND) + 1;
+    return Math.min(cue.end ?? readable, next ? next.start : Infinity);
+  }
+
+  function renderSubs(t, i) {
+    if (!s.subs) {
+      if (subsBox) subsBox.style.display = "none";
+      return;
+    }
+    // Пока звучит фраза — её текст, даже если видео уже дошло до следующей.
+    let text = s.playing ? s.cues[s.playing.index].text : "";
+    if (!text && i >= 0 && t < cueEnd(i)) text = s.cues[i].text;
+    const box = subsElement();
+    if (box.textContent !== text) box.textContent = text;
+    box.style.display = text ? "block" : "none";
   }
 
   // ── Проигрывание ────────────────────────────────────────────────────
@@ -148,6 +205,8 @@
     const v = s.video;
     const t = v.currentTime;
     const i = indexAt(t);
+    renderSubs(t, i);
+    if (!s.voiceId) return; // только субтитры
 
     if (s.waiting) {
       const cue = s.cues[s.waitIndex];
@@ -203,6 +262,11 @@
         s.lastIndex = s.waitIndex;
       }
     },
+    // Запасной такт: в фоновой вкладке Firefox замедляет таймеры до раза в
+    // секунду, а события видео идут как обычно — озвучка не отстаёт.
+    timeupdate() {
+      tick();
+    },
     volumechange() {
       // Громкость поменял человек — это новая громкость оригинала.
       if (s.selfVolume) return;
@@ -211,7 +275,7 @@
     },
   };
 
-  function start({ cues, voiceId, duck: duckLevel, wait }) {
+  function start({ cues, voiceId, duck: duckLevel, wait, subs }) {
     stop();
     const video = findVideo();
     if (!video) throw new Error("на странице нет видео");
@@ -221,8 +285,9 @@
     s = {
       video,
       videoId: currentVideoId(),
-      cues: cues.map((c) => ({ start: c.start, text: c.text, state: "new", pcm: null })),
-      voiceId,
+      cues: cues.map((c) => ({ start: c.start, end: c.end, text: c.text, state: "new", pcm: null })),
+      voiceId: voiceId || "",
+      subs: !!subs || !voiceId,
       duck: Math.max(0, Math.min(1, duckLevel ?? 0.2)),
       wait: wait !== false,
       lastIndex: -1,
@@ -231,6 +296,8 @@
       waiting: false,
       busy: false,
       prepared: 0,
+      secPerChar: 0,
+      loadingSince: 0,
       errors: 0,
       lastError: "",
       ducked: false,
@@ -243,7 +310,7 @@
     });
     if (!video.paused) ctx.resume().catch(() => {});
     s.timer = setInterval(tick, 100);
-    browser.runtime.sendMessage({ cmd: "tts-preload" }).catch(() => {});
+    if (s.voiceId) browser.runtime.sendMessage({ cmd: "tts-preload" }).catch(() => {});
     // Фраза, на которой стоит видео, — тоже озвучится, если начнётся не позже чем через START_WINDOW.
     const i = indexAt(video.currentTime);
     if (i >= 0 && video.currentTime - s.cues[i].start > START_WINDOW) s.lastIndex = i;
@@ -262,7 +329,45 @@
       old.selfVolume = true;
       old.video.volume = old.baseVolume;
     }
+    subsBox?.remove();
+    subsBox = null;
     s = null;
+  }
+
+  // Когда будет готова фраза, которую скажем следующей. Синтез идёт по
+  // порядку, поэтому ждать придётся и все неготовые фразы перед ней.
+  function nextPhrase(t, i) {
+    let target = s.waiting ? s.waitIndex : -1;
+    if (target < 0) {
+      for (let j = Math.max(0, i); j < s.cues.length; j += 1) {
+        if (j > s.lastIndex && s.cues[j].state !== "error") {
+          target = j;
+          break;
+        }
+      }
+    }
+    if (target < 0) return null;
+    const cue = s.cues[target];
+    const inSeconds = Math.max(0, (cue.start - t) / (s.video.playbackRate || 1));
+    if (cue.state === "ready") return { index: target + 1, inSeconds, readyIn: 0 };
+    if (!s.secPerChar) return { index: target + 1, inSeconds, readyIn: null }; // ещё не замерили
+    let chars = 0;
+    for (let j = Math.max(0, i); j <= target; j += 1) {
+      if (s.cues[j].state === "new" || s.cues[j].state === "loading") chars += Math.max(20, s.cues[j].text.length);
+    }
+    const loadingFor = s.busy ? (performance.now() - s.loadingSince) / 1000 : 0;
+    return { index: target + 1, inSeconds, readyIn: Math.max(0.5, chars * s.secPerChar - loadingFor) };
+  }
+
+  // До какого места видео фразы уже озвучены подряд, без пропусков.
+  function readyUntil(i) {
+    let until = null;
+    for (let j = Math.max(0, i); j < s.cues.length; j += 1) {
+      const st = s.cues[j].state;
+      if (st === "ready" || st === "error" || j <= s.lastIndex) until = s.cues[j].start;
+      else break;
+    }
+    return until;
   }
 
   function status() {
@@ -279,7 +384,11 @@
       waiting: s.waiting,
       speaking: s.playing ? s.cues[s.playing.index].text : "",
       position: i + 1,
-      audioBlocked: ctx?.state === "suspended" && !s.video.paused && !s.waiting,
+      voiced: !!s.voiceId,
+      subs: s.subs,
+      next: s.voiceId ? nextPhrase(s.video.currentTime, i) : null,
+      readyUntil: s.voiceId ? readyUntil(i) : null,
+      audioBlocked: !!s.voiceId && ctx?.state === "suspended" && !s.video.paused && !s.waiting,
     };
   }
 
@@ -291,6 +400,10 @@
     try {
       if (msg.cmd === "dub-start") start(msg.args);
       else if (msg.cmd === "dub-stop") stop();
+      else if (msg.cmd === "dub-config" && s) {
+        s.subs = !!msg.args?.subs || !s.voiceId;
+        tick();
+      }
       return Promise.resolve({ ok: true, result: status() });
     } catch (e) {
       return Promise.resolve({ ok: false, error: String(e?.message || e) });

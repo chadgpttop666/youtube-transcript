@@ -55,7 +55,9 @@
       <textarea id="dubText" rows="8" spellcheck="false"
         placeholder="[00:00] Всем привет!&#10;[00:03] Сегодня поговорим о…&#10;&#10;или SRT"></textarea>
     </label>
-    <p class="hint">Скопируй субтитры с таймкодами на вкладке «Субтитры», переведи, сохранив метки [мм:сс], и вставь сюда.</p>
+    <p class="hint">Скопируй субтитры с таймкодами на вкладке «Субтитры», переведи, сохранив метки [мм:сс], и вставь сюда.
+      Или перетащи сюда файл .srt / .vtt / .txt — <label class="file-link">выбрать файл<input type="file" id="dubFile" accept=".srt,.vtt,.txt,.sbv,text/plain" hidden></label>.
+      Пометки вроде [Музыка] не зачитываются.</p>
     <label>Голос
       <select id="dubVoice"><option value="">загружаю…</option></select>
     </label>
@@ -64,6 +66,7 @@
     </label>
     <label class="check"><input type="checkbox" id="dubMerge" checked> Склеивать обрывки в предложения</label>
     <label class="check"><input type="checkbox" id="dubWait" checked> Ставить видео на паузу, если фраза не готова</label>
+    <label class="check"><input type="checkbox" id="dubSubs"> Показывать перевод субтитрами на видео</label>
     <div class="row buttons">
       <button id="dubStart" class="primary">Озвучить</button>
       <button id="dubStop">Стоп</button>
